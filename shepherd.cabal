@@ -35,6 +35,7 @@ library
                        , time ==1.4.0.1.*
                        , data-default ==0.5.3.*
                        , transformers ==0.4.1.0.*
+                       , concurrent-extra ==0.7.0.8.*
 
 
 
