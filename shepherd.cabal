@@ -21,6 +21,21 @@ library
   Exposed-modules:     Network.BitTorrent.Shepherd
   build-depends:       base >=4.6 && <5
                        , scotty ==0.8.1.*
+                       , text ==1.1.1.3.*
+                       , wai ==3.0.0.2.*
+                       , http-types ==0.8.5.*
+                       , random ==1.0.1.1.*
+                       , mtl ==2.2.1
+                       , wai-extra ==3.0.0.1.*
+                       , bencode ==0.5.*
+                       , containers
+                       , bytestring ==0.10.0.2.*
+                       , stm ==2.4.3.*
+                       , hashtables ==1.1.2.1.*
+                       , time ==1.4.0.1.*
+                       , data-default ==0.5.3.*
+                       , transformers ==0.4.1.0.*
+
 
 
 executable shepherd-server
