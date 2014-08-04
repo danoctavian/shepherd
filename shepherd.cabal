@@ -36,6 +36,8 @@ library
                        , data-default ==0.5.3.*
                        , transformers ==0.4.1.0.*
                        , concurrent-extra ==0.7.0.8.*
+                       , network ==2.5.0.0.*
+                       , binary ==0.5.1.1.*
 
 
 

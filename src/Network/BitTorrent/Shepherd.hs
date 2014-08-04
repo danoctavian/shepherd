@@ -6,10 +6,9 @@
 
 module Network.BitTorrent.Shepherd where
 import Web.Scotty
-import Network.Wai.Middleware.RequestLogger -- install wai-extra if you don't have this
+import Network.Socket
 import Control.Monad
 import Control.Monad.Trans
-import Network.HTTP.Types (status302)
 import Network.Wai
 import qualified Data.Text.Lazy as T
 import qualified Data.List  as DL
@@ -18,20 +17,25 @@ import Data.Word
 import Data.BEncode
 import qualified Data.Map as Map
 import Network.HTTP.Types.Status
+import Data.ByteString as DB
 import Data.ByteString.Char8 as DBC
 import Prelude as P
 import Data.Maybe
-import Control.Concurrent.STM
 import Data.HashTable.IO as DHI
 import Data.Time.Clock
+import Data.ByteString.Lazy as DBL
 import Data.ByteString.Lazy.Char8 as DBLC
-import qualified Control.Arrow as CA
 import Control.Monad.Trans.Maybe
 import Control.Concurrent.Lock as Lock
+import Data.Binary.Put
+import qualified Control.Monad.State as MS
 
 -- Bittorrent tracker; no extensions
 
 data Event = Started | Completed | Stopped
+  deriving (Eq, Read, Show)
+
+data Compact = Compact Bool
   deriving (Eq, Read, Show)
 
 type InfoHash = String
@@ -46,6 +50,7 @@ data Announce = Announce { info_hash :: InfoHash
                          , event :: Maybe Event
                          , numwant :: Maybe Int
                          , ip :: Maybe String
+                         , compact :: Maybe Compact
                        } deriving (Show)
 type Scrape = [InfoHash]
 
@@ -53,7 +58,7 @@ type Scrape = [InfoHash]
 data PeerState = Seeder | Leecher deriving (Eq, Show)
 data Peer = Peer {peerAddr :: PeerAddr, peerState :: PeerState, lastAction :: UTCTime}
   deriving (Show)
-data PeerAddr = PeerAddr { peerId :: PeerID, peerIP :: String, peerPort :: Word16}
+data PeerAddr = PeerAddr {peerId :: PeerID, peerRemoteHost :: SockAddr, peerPort :: Word16}
   deriving (Show)
 
 
@@ -105,7 +110,9 @@ tvarDB = do
 
 -- standard response
 data AnnounceResponse = AnnounceResponse { interval :: Int, leechers :: Int, seeders :: Int, swarmPeers :: [PeerAddr]}
+  deriving (Show)
 data ScrapeResponse = ScrapeResponse {scDownloaded :: Int, scLeechers :: Int, scSeeders :: Int}
+  deriving (Show)
 
 -- Error responses
 data ErrorCode = 
@@ -147,6 +154,7 @@ readAnnounce params
                  <*> (getOptParam "event")
                  <*> (getOptParam "numwanst")
                  <*> (getOptParam "ip")
+                 <*> (getOptParam "compact")
     where  
       getParam pName errCode = (maybeToEither errCode $ DL.lookup pName params)
                         >>= (textToErr parseParam)
@@ -174,21 +182,23 @@ announceUpdate ann ip oldPeer now
     where
       iHash = info_hash ann
       newState = (if' (left ann > 0) Leecher Seeder)
-      newPeer = Peer (PeerAddr {peerId = peer_id ann, peerIP = ip, peerPort = port ann})
+      newPeer = Peer (PeerAddr {peerId = peer_id ann, peerRemoteHost = ip, peerPort = port ann})
                     newState now
 
 sumPair (x,y) (a, b) = (x + a, y + b)
 
-handleAnnounce db ann ip = do
+handleAnnounce db ann remoteHost = do
   maybePeer <- getPeer db (info_hash ann) (peer_id ann)
   now <- getCurrentTime
-  let peerUpdate = announceUpdate ann ip maybePeer now
+  let peerUpdate = announceUpdate ann remoteHost maybePeer now
   case peerUpdate of 
       Add infoH p -> putPeer db infoH p
       Delete infoH pid -> deletePeer db infoH pid            
   allPeers <- getPeers db (info_hash ann)
-              (if' (isNothing $ numwant ann) defaultAllowedPeers (fromJust $ numwant ann))
-  return .  (\b -> bShow b "") . bencodeAnnResponse . makeAnnounceResponse $ allPeers
+              (maybe defaultAllowedPeers id (numwant ann))
+  liftIO $ P.putStrLn $ "response is " ++ (show $ makeAnnounceResponse allPeers)              
+  liftIO $ P.putStrLn $ "bencoding is " ++ (show $ bencodeAnnResponse ann $ makeAnnounceResponse allPeers)
+  return .  (\b -> bShow b "") . bencodeAnnResponse ann . makeAnnounceResponse $ allPeers
 
 -- TODO: incorrect impl. values are sometimes correct
 -- need to keep track of downloads and an efficient way of counting seeders/leechers
@@ -206,7 +216,7 @@ makeAnnounceResponse peers
   = AnnounceResponse { leechers = countPeers Leecher peers
                      , seeders = countPeers Seeder peers
                      , swarmPeers = P.map peerAddr peers
-                     , interval = 10 }
+                     , interval = defaultAnnounceInterval }
 
 bencodeScrapeResponse scrapeResponses
   = BDict $ Map.fromList
@@ -216,20 +226,31 @@ bencodeScrapeResponse scrapeResponses
                                         , ("downloaded", bint $ scDownloaded r)]))
       scrapeResponses)]
 
-bencodeAnnResponse r
+{- the 6 bytes encoding of a peer
+  this solves only IPv4 addresses
+-}
+encodePeer peer = case (peerRemoteHost peer) of
+  SockAddrInet port hostAddr -> Just $ runPut (putWord32be hostAddr >> putWord16be (peerPort peer))
+  other -> Nothing -- we don't encode IPv6 or anything else
+
+bencodeAnnResponse ann r
   = BDict $ Map.fromList
             [("interval", bint $ interval r),
              ("complete", bint $ leechers r),
              ("incomplete", bint $ seeders r),
-             ("peers", BList $ P.map
-               (\p -> BDict $ Map.fromList [("peer_id", BString . DBLC.pack $ peerId p),
-                                            ("ip", BString . DBLC.pack $ peerIP p),
-                                            ("port", BInt $ fromIntegral $ peerPort p)])
-               $ swarmPeers r)]
+             ("peers", bencodePeers (compact ann) $ swarmPeers r)]
 
 
 bint = BInt . fromIntegral             
-countPeers s peers = P.length . P.filter ((== s) . peerState) $ peers                             
+countPeers s peers = P.length . P.filter ((== s) . peerState) $ peers
+
+bencodePeers compact peers
+   = if' (maybe False (\(Compact t) -> t) compact)
+     (BString . DBL.concat . catMaybes . P.map encodePeer $ peers)
+     (BList $ P.map (\p -> BDict $ Map.fromList
+        [("peer id", BString . DBLC.pack $ peerId p),
+         ("ip", BString . DBLC.pack $ stringIP $ show $ peerRemoteHost $ p),
+         ("port", BInt $ fromIntegral $ peerPort p)]) peers)                       
 
 runTracker = do
   P.putStrLn "running tracker"
@@ -255,31 +276,41 @@ runTracker = do
           liftIO $ P.putStrLn $ "failed with errcode " ++ (show errCode)
           status $ errorCodeToStatus errCode
         Right announce -> do
-          remoteIP <- fmap (stringIP. remoteHost) request
-          liftIO $ P.putStrLn $ "handling announce from " ++ remoteIP
-          r <- liftIO $ handleAnnounce db announce remoteIP
+          remoteH <- fmap remoteHost request
+          liftIO $ P.putStrLn $ "handling announce from " ++ (show remoteH)
+          r <- liftIO $ handleAnnounce db announce remoteH
           liftIO $ P.putStrLn $ "response to ann is " ++ r
-          liftIO $ P.putStrLn $ "dafuq is this shit " ++ r
-          text $ T.pack $ r
+          liftIO $ P.putStrLn $ "dafuq is this shit " ++ r      
+          rawText $ DBLC.pack r
     get "/scrape" $ do 
       ps <- readScrape <$> params
       liftIO $ P.putStrLn $ "scrape params are " ++ (show ps) 
       r <- liftIO $ handleScrape db ps
       liftIO $ P.putStrLn $ "response to scrape is " ++ r
-      text $ T.pack r
+      rawText $ DBLC.pack r
 
 
+rawText bs = do
+  setHeader "Content-Type" "text/plain"
+  raw bs
+  
 -- constants
 maxAllowedPeers = 55
 defaultAllowedPeers = 50
 infoHashLen = 20
 peerIdLen = 20
+defaultAnnounceInterval = 10 -- in seconds 
 
 instance Parsable Word16 where parseParam = readEither
 instance Parsable Event where
   parseParam "stopped" = Right Stopped
   parseParam "started" = Right Started
   parseParam "completed" = Right Completed
+  parseParam _ = Left "failed parse event"
+
+instance Parsable Compact where
+  parseParam "1" = Right $ Compact True
+  parseParam "0" = Right $ Compact False
   parseParam _ = Left "failed parse event"
 
 -- UTILS
@@ -297,3 +328,5 @@ stringIP = P.takeWhile (/= ':') . show
 params are [("info_hash","DA\ETXR^m\65533\65533\SOW\65533i ~\65533b\65533\SOH0\65533"),("peer_id","-TR2510-kws2e1c0ye7g"),("port","51413"),("uploaded","0"),("downloaded","0"),("left","0"),("numwant","80"),("key","7e07f200"),("compact","1"),("supportcrypto","1"),("event","started")]
 params are [("info_hash","DA\ETXR^m\65533\65533\SOW\65533i ~\65533b\65533\SOH0\65533"),("peer_id","-TR2510-kws2e1c0ye7g"),("port","51413"),("uploaded","0"),("downloaded","0"),("left","0"),("numwant","0"),("key","7e07f200"),("compact","1"),("supportcrypto","1"),("event","stopped")]
 -}
+
+-- \SOH\NUL\NUL\DEL\195\136\195\149\SOH\NUL\NUL\DEL\SUB\195\171e\r\n0\r\n\r\n
