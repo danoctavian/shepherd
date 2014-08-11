@@ -5,7 +5,9 @@
 
 -- Bittorrent tracker; extensions: compact
 
-module Network.BitTorrent.Shepherd where
+module Network.BitTorrent.Shepherd (
+  runTracker
+  ) where
 import Web.Scotty
 import Network.Socket
 import Control.Monad
@@ -74,10 +76,10 @@ peerIdLen = 20
 defaultAnnounceInterval = 10 -- in seconds 
                 
 -- TODO: add proper logging and remove all putStrLn
-runTracker = do
+runTracker port = do
   P.putStrLn "running tracker"
   db <- htDB
-  scotty 3000 $ do
+  scotty port $ do
     get "/announce" $ do
       ps <- params
       liftIO $ P.putStrLn $ "announce params are " ++ (show ps) 

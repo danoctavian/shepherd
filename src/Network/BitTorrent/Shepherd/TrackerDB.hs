@@ -1,5 +1,11 @@
 {-# LANGUAGE RankNTypes #-}
-module Network.BitTorrent.Shepherd.TrackerDB where
+module Network.BitTorrent.Shepherd.TrackerDB (
+    putPeer
+  , deletePeer
+  , getPeer
+  , getPeers
+  , TrackerDB (TrackerDB)
+  ) where
 
 import Data.Hashable
 

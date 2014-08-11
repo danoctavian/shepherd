@@ -1,4 +1,6 @@
-module Network.BitTorrent.Shepherd.HashTableTrackerDB where
+module Network.BitTorrent.Shepherd.HashTableTrackerDB (
+   htDB
+  ) where
 
 import Control.Monad
 import Control.Monad.Trans

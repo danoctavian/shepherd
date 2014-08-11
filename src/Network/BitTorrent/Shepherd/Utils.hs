@@ -1,5 +1,11 @@
 {-# LANGUAGE NoMonomorphismRestriction #-}
-module Network.BitTorrent.Shepherd.Utils where
+module Network.BitTorrent.Shepherd.Utils (
+    if'
+  , maybeToEither
+  , liftMaybe
+  , (.*)
+  , (.**)
+  ) where
 import Control.Monad
 import Prelude as P
 
