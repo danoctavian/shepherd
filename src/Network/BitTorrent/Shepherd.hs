@@ -77,10 +77,12 @@ defaultAnnounceInterval = 10 -- in seconds
                 
 -- TODO: add proper logging and remove all putStrLn
 runTracker port = do
-  P.putStrLn "running tracker"
+  P.putStrLn "running tracker now"
   db <- htDB
   scotty port $ do
+
     get "/announce" $ do
+      liftIO $ P.putStrLn "got announce"
       ps <- params
       liftIO $ P.putStrLn $ "announce params are " ++ (show ps) 
       announceRes <- readAnnounce <$> params
@@ -93,7 +95,7 @@ runTracker port = do
           remoteH <- fmap remoteHost request
           liftIO $ P.putStrLn $ "handling announce from " ++ (show remoteH)
           r <- liftIO $ handleAnnounce db announce remoteH
-          liftIO $ P.putStrLn $ "response to ann is " ++ r    
+          liftIO $ P.putStrLn $ "response to ann is " ++ (show $ DBLC.pack r)
           rawText $ DBLC.pack r
     get "/scrape" $ do 
       ps <- readScrape <$> params
@@ -138,8 +140,10 @@ handleAnnounce db ann remoteHost = do
   case peerUpdate of 
       Add infoH p -> putPeer db infoH (peer_id ann) p
       Delete infoH pid -> deletePeer db infoH pid            
+  -- fmap (P.filter ((/= (peer_id ann)) . peerId . peerAddr)) $ 
   allPeers <- getPeers db (info_hash ann)
               (maybe defaultAllowedPeers id (numwant ann))
+  P.putStrLn $ show $ makeAnnounceResponse allPeers
   return .  (\b -> bShow b "") . bencodeAnnResponse ann . makeAnnounceResponse $ allPeers
 
 -- pure logic for what happens when a peer comes in
@@ -151,7 +155,6 @@ announceUpdate ann ip oldPeer now
       other -> Add iHash newPeer -- updating it's state
     Nothing -> Add iHash newPeer
     where
-      sumPair (x,y) (a, b) = (x + a, y + b)
       iHash = info_hash ann
       newState = (if' (left ann > 0) Leecher Seeder)
       newPeer = Peer (PeerAddr {peerId = peer_id ann, peerRemoteHost = ip, peerPort = port ann})
@@ -178,8 +181,12 @@ readScrape = P.map (T.unpack . snd) . P.filter ((== "info_hash") . fst)
 -- TODO: incorrect impl. values are sometimes correct
 -- need to keep track of downloads and an efficient way of counting seeders/leechers
 handleScrape db infoHashes =
-   (\b -> bShow b "") . bencodeScrapeResponse <$> (forM infoHashes $ \infoHash ->
-    (infoHash,) . makeScrapeResponse <$> getPeers db infoHash defaultAllowedPeers)
+   (\b -> bShow b "") . bencodeScrapeResponse <$>
+    (forM infoHashes $ \infoHash -> do
+      peers <- (infoHash,) . makeScrapeResponse <$> getPeers db infoHash defaultAllowedPeers
+      P.putStrLn $ show peers 
+      return peers
+    )
 
 makeScrapeResponse peers
   = ScrapeResponse { scSeeders = countPeers Seeder peers
@@ -192,8 +199,8 @@ makeScrapeResponse peers
 bencodeAnnResponse ann r
   = BDict $ Map.fromList
             [("interval", bint $ interval r),
-             ("complete", bint $ leechers r),
-             ("incomplete", bint $ seeders r),
+             ("complete", bint $ seeders r),
+             ("incomplete", bint $ leechers r),
              ("peers", bencodePeers (compact ann) $ swarmPeers r)]       
 
 bencodeScrapeResponse scrapeResponses
@@ -214,9 +221,11 @@ bencodePeers compact peers
 
 {- the 6 bytes encoding of a peer
   this solves only IPv4 addresses
+  address encoding should be big endian but for some reason 127.0.0.1 is
+  represented in little endian (1.0.0.127)
 -}
 encodePeer peer = case (peerRemoteHost peer) of
-  SockAddrInet port hostAddr -> Just $ runPut (putWord32be hostAddr >> putWord16be (peerPort peer))
+  SockAddrInet port hostAddr -> Just $ runPut (putWord32le hostAddr >> putWord16be (peerPort peer))
   other -> Nothing -- we don't encode IPv6 or anything else
 
 bint = BInt . fromIntegral             
@@ -263,3 +272,9 @@ instance Parsable Compact where
   parseParam _ = Left "failed parse event"
 
 stringIP = P.takeWhile (/= ':') . show 
+
+{-
+
+HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 105\r\n\r\nd8:completei1e10:downloadedi2e10:incompletei1e8:intervali1927e12:min intervali963e5:peers12:\DEL\NUL\NUL\SOH\SUB\225\DEL\NUL\NUL\SOH\SUB\235e
+
+-}
