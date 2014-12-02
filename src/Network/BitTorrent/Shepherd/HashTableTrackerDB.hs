@@ -11,7 +11,7 @@ import Control.Monad.Trans.Maybe
 import Control.Concurrent.Lock as Lock
 import Network.BitTorrent.Shepherd.TrackerDB
 import Network.BitTorrent.Shepherd.Utils
-
+import Control.Concurrent.STM.TVar
 
 htDB :: (MonadIO m) => m (TrackerDB k1 k2 a)
 htDB = do
@@ -48,8 +48,4 @@ getPs infoHash numWant fileHT = do
   case maybeSwarm of 
     Just swarm -> (P.take numWant . P.map snd) <$> (DHI.toList swarm)
     Nothing -> return []
-
-
-
-
 

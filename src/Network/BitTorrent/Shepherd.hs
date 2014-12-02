@@ -26,12 +26,17 @@ import Data.Maybe
 import Data.Time.Clock
 import Data.ByteString.Lazy as DBL
 import Data.ByteString.Lazy.Char8 as DBLC
+import Data.ByteString as DB
 import Data.Binary.Put
 import Network.BitTorrent.Shepherd.Utils
 import Network.BitTorrent.Shepherd.TrackerDB
 import Network.BitTorrent.Shepherd.HashTableTrackerDB
 
-
+import Control.Concurrent.STM.TVar
+import Control.Concurrent.STM
+import qualified Data.Map.Strict as SMap
+import qualified Data.Vector as DV
+import Data.Hashable
 
 data Announce = Announce { info_hash :: InfoHash
                          , peer_id :: PeerID
@@ -193,6 +198,55 @@ makeScrapeResponse peers
                    , scLeechers = countPeers Leecher peers
                    , scDownloaded = 0 } 
 
+{-
+
+data store operations
+
+add
+del
+get
+getall
+-}
+
+
+
+{-
+  peer store: fixed size hash table with maps of swarms in each buckets
+  for no single contention point; threads compete for access to the tvars
+  containing the swarm buckets
+-}
+
+torrentBucketCount = 2 ^ 10
+data PeerStore = PeerStore (DV.Vector (TVar (SMap.Map InfoHash (SMap.Map PeerID Peer))))
+
+initPeerStore = do
+  buckets <- replicateM torrentBucketCount $ newTVarIO SMap.empty
+  return $ PeerStore $ DV.fromList buckets
+
+getBucket table infoHash = table DV.! ((hash infoHash) `mod` (DV.length table))
+
+addP infoHash peerId peer  (PeerStore table) = do
+  modifyTVar (getBucket table infoHash)
+    (\ts -> (\swarm -> SMap.insert infoHash swarm ts)
+      $ SMap.insert peerId peer $ fromJust
+      $ mplus (SMap.lookup infoHash ts) (Just SMap.empty))
+
+delP infoHash peerId (PeerStore table) = do
+  modifyTVar (getBucket table infoHash)
+    (\ts -> case SMap.lookup (infoHash) ts of
+              Nothing -> ts
+              (Just swarm) -> SMap.insert infoHash (SMap.delete peerId swarm) ts)
+
+getP infoHash peerId (PeerStore table) = do
+  fmap (\ts -> SMap.lookup infoHash ts >>= SMap.lookup peerId)
+             $ readTVar (getBucket table infoHash)
+
+getPs infoHash numWant (PeerStore table) = do
+  ts <- readTVar (getBucket table infoHash)
+  return $ case SMap.lookup infoHash ts of
+    Just swarm -> P.take numWant $ SMap.toList swarm
+    Nothing -> []
+
 {- BENCODE functions -}
 
 
@@ -274,7 +328,5 @@ instance Parsable Compact where
 stringIP = P.takeWhile (/= ':') . show 
 
 {-
-
 HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 105\r\n\r\nd8:completei1e10:downloadedi2e10:incompletei1e8:intervali1927e12:min intervali963e5:peers12:\DEL\NUL\NUL\SOH\SUB\225\DEL\NUL\NUL\SOH\SUB\235e
-
 -}
