@@ -4,4 +4,4 @@ import Network.BitTorrent.Shepherd
 
 main = do
   putStrLn "running server"
-  runTracker
+  runTracker 6666

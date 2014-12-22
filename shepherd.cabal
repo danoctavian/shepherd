@@ -34,12 +34,12 @@ library
                        , bytestring >=0.10.4.0
                        , stm >=2.4.3
                        , hashtables >=1.1.2.1
-                       , time >=1.5
+                       , time >=1.4
                        , data-default >=0.5.3
                        , transformers >=0.4.1.0
                        , concurrent-extra >=0.7.0.8
                        , network >=2.5.0.0
-                       , binary >=0.7.2.2
+                       , binary >=0.7.1
                        , hashable >=1.2.2.0
                        , vector ==0.10.12.*
 
