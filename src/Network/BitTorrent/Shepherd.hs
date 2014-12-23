@@ -36,6 +36,7 @@ import Control.Concurrent.STM
 import qualified Data.Map.Strict as SMap
 import qualified Data.Vector as DV
 import Data.Hashable
+import System.Log.Logger
 
 data Announce = Announce { info_hash :: InfoHash
                          , peer_id :: PeerID
@@ -71,6 +72,8 @@ data Event = Started | Completed | Stopped
 data Compact = Compact Bool
   deriving (Eq, Read, Show)
 
+logger = "shepherd"
+
 -- constants
 maxAllowedPeers = 55
 defaultAllowedPeers = 50
@@ -81,31 +84,31 @@ defaultAnnounceInterval = 10 -- in seconds
                 
 -- TODO: add proper logging and remove all putStrLn
 runTracker port = do
-  P.putStrLn "running tracker now"
+  infoM logger "started tracker..."
   db <- initPeerStore
   scotty port $ do
 
     get "/announce" $ do
-      liftIO $ P.putStrLn "got announce"
+      liftIO $ debugM logger "got announce"
       ps <- params
-      liftIO $ P.putStrLn $ "announce params are " ++ (show ps) 
+      liftIO $ debugM logger $ "announce params are " ++ (show ps) 
       announceRes <- readAnnounce <$> params
-      liftIO $ P.putStrLn $ "finished reading announce"
+      liftIO $ debugM logger $ "finished reading announce"
       case announceRes of 
         Left errCode -> do
-          liftIO $ P.putStrLn $ "failed with errcode " ++ (show errCode)
+          liftIO $ debugM logger $ "failed with errcode " ++ (show errCode)
           status $ errorCodeToStatus errCode
         Right announce -> do
           remoteH <- fmap remoteHost request
-          liftIO $ P.putStrLn $ "handling announce from " ++ (show remoteH)
+          liftIO $ debugM logger $ "handling announce from " ++ (show remoteH)
           r <- liftIO $ handleAnnounce db announce remoteH
-          liftIO $ P.putStrLn $ "response to ann is " ++ (show $ DBLC.pack r)
+          liftIO $ debugM logger $ "response to ann is " ++ (show $ DBLC.pack r)
           rawText $ DBLC.pack r
     get "/scrape" $ do 
       ps <- readScrape <$> params
-      liftIO $ P.putStrLn $ "scrape params are " ++ (show ps) 
+      liftIO $ debugM logger $ "scrape params are " ++ (show ps) 
       r <- liftIO $ handleScrape db ps
-      liftIO $ P.putStrLn $ "response to scrape is " ++ r
+      liftIO $ debugM logger $ "response to scrape is " ++ r
       rawText $ DBLC.pack r
 
 
@@ -146,7 +149,7 @@ handleAnnounce db ann remoteHost = do
       Delete infoH pid -> deletePeer db infoH pid            
   allPeers <- getPeers db (info_hash ann)
               (maybe defaultAllowedPeers id (numwant ann))
-  P.putStrLn $ show $ makeAnnounceResponse allPeers
+  debugM logger $ show $ makeAnnounceResponse allPeers
   return .  (\b -> bShow b "") . bencodeAnnResponse ann . makeAnnounceResponse $ allPeers
 
 -- pure logic for what happens when a peer comes in
@@ -185,7 +188,7 @@ handleScrape db infoHashes =
    (\b -> bShow b "") . bencodeScrapeResponse <$>
     (forM infoHashes $ \infoHash -> do
       peers <- (infoHash,) . makeScrapeResponse <$> getPeers db infoHash defaultAllowedPeers
-      P.putStrLn $ show peers 
+      debugM logger $ show peers 
       return peers
     )
 
