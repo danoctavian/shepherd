@@ -6,7 +6,11 @@
 -- Bittorrent tracker; extensions: compact
 
 module Network.BitTorrent.Shepherd (
-  runTracker
+    runTracker
+  , Announce (..)
+  , Event (..)
+  , TrackerEvent (..)
+  , Config (..)
   ) where
 import Web.Scotty
 import Network.Socket
@@ -33,6 +37,7 @@ import Network.BitTorrent.Shepherd.TrackerDB
 
 import Control.Concurrent.STM.TVar
 import Control.Concurrent.STM
+import Control.Concurrent.STM.TChan
 import qualified Data.Map.Strict as SMap
 import qualified Data.Vector as DV
 import Data.Hashable
@@ -48,7 +53,7 @@ data Announce = Announce { info_hash :: InfoHash
                          , numwant :: Maybe Int
                          , ip :: Maybe String
                          , compact :: Maybe Compact
-                       } deriving (Show)
+                       } deriving (Show, Eq)
 type Scrape = [InfoHash]
 
 
@@ -72,6 +77,15 @@ data Event = Started | Completed | Stopped
 data Compact = Compact Bool
   deriving (Eq, Read, Show)
 
+data Config = Config {listenPort :: Word16, events :: Maybe (TChan TrackerEvent)}
+
+-- notifications about what happens in the tracker
+-- used for debugging
+data TrackerEvent = Booting | AnnounceEv Announce deriving (Show, Eq)
+pushEvent chan e = case chan of
+  Nothing -> return ()
+  (Just c) -> atomically $ writeTChan c e
+
 logger = "shepherd"
 
 -- constants
@@ -82,33 +96,29 @@ peerIdLen = 20
 -- TODO: make this a configuration parameter not a constant
 defaultAnnounceInterval = 10 -- in seconds 
                 
--- TODO: add proper logging and remove all putStrLn
-runTracker port = do
+runTracker conf = do
   infoM logger "started tracker..."
   db <- initPeerStore
-  scotty port $ do
-
+ 
+  pushEvent (events conf) $ Booting
+  scotty (fromIntegral $ listenPort conf) $ do
     get "/announce" $ do
       liftIO $ debugM logger "got announce"
       ps <- params
-      liftIO $ debugM logger $ "announce params are " ++ (show ps) 
       announceRes <- readAnnounce <$> params
-      liftIO $ debugM logger $ "finished reading announce"
       case announceRes of 
         Left errCode -> do
-          liftIO $ debugM logger $ "failed with errcode " ++ (show errCode)
+          liftIO $ errorM logger $ "failed with errcode " ++ (show errCode)
           status $ errorCodeToStatus errCode
         Right announce -> do
           remoteH <- fmap remoteHost request
           liftIO $ debugM logger $ "handling announce from " ++ (show remoteH)
+          liftIO $ pushEvent (events conf) (AnnounceEv announce)
           r <- liftIO $ handleAnnounce db announce remoteH
-          liftIO $ debugM logger $ "response to ann is " ++ (show $ DBLC.pack r)
           rawText $ DBLC.pack r
     get "/scrape" $ do 
       ps <- readScrape <$> params
-      liftIO $ debugM logger $ "scrape params are " ++ (show ps) 
       r <- liftIO $ handleScrape db ps
-      liftIO $ debugM logger $ "response to scrape is " ++ r
       rawText $ DBLC.pack r
 
 
@@ -200,6 +210,7 @@ makeScrapeResponse peers
   peer store: fixed size hash table with maps of swarms in each buckets
   for no single contention point; threads compete for access to a bucket - 
   represented by a tvar
+  TODO: use unboxed vector
 -}
 
 torrentBucketCount = 2 ^ 10

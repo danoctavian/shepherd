@@ -4,4 +4,4 @@ import Network.BitTorrent.Shepherd
 
 main = do
   putStrLn "running server"
-  runTracker 6666
+  runTracker $ Config {listenPort = 6666, events = Nothing}
