@@ -11,6 +11,7 @@ module Network.BitTorrent.Shepherd (
   , Event (..)
   , TrackerEvent (..)
   , Config (..)
+  , logger
   ) where
 import Web.Scotty
 import Network.Socket
@@ -159,8 +160,9 @@ handleAnnounce db ann remoteHost = do
       Delete infoH pid -> deletePeer db infoH pid            
   allPeers <- getPeers db (info_hash ann)
               (maybe defaultAllowedPeers id (numwant ann))
-  debugM logger $ show $ makeAnnounceResponse allPeers
-  return .  (\b -> bShow b "") . bencodeAnnResponse ann . makeAnnounceResponse $ allPeers
+  let filtered = P.filter ((/= (peer_id ann)) . peerId . peerAddr) allPeers
+  debugM logger $ show $ makeAnnounceResponse filtered
+  return .  (\b -> bShow b "") . bencodeAnnResponse ann . makeAnnounceResponse $ filtered
 
 -- pure logic for what happens when a peer comes in
 data PeerAction = Add InfoHash Peer | Delete InfoHash PeerID
